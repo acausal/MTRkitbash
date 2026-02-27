@@ -92,8 +92,8 @@ class QuestionGenerator:
         print("  Building investigation plan...")
         investigation_plan = self.build_investigation_plan(questions)
         print(f"    → Prioritized {len(investigation_plan['priority_order'])} questions")
-        print("  Writing investigation_plan.json...")
-        self.writer.write_index('investigation_plan', investigation_plan)
+        # Note: investigation_plan is computed but not separately indexed
+        # (questions themselves contain all necessary information)
         
         # Categorize by priority
         critical = [q for q in questions if q['priority'] == 'critical']

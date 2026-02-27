@@ -515,7 +515,7 @@ if __name__ == "__main__":
     print("  - GrainOrchestrationTrigger (crystallization scheduling)")
     print("  - MTRGrainUnifiedPipeline (complete orchestration)")
     print("\n" + "="*70)
-    print("\nUsage in phase3e_orchestrator.py:")
+    print("\nUsage in query_orchestrator.py:")
     print("""
     from mtr_grain_bridge import MTRGrainUnifiedPipeline
     from grain_system import ShannonGrainOrchestrator

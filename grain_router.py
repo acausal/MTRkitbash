@@ -789,4 +789,4 @@ if __name__ == "__main__":
     else:
         print("  (None)")
     
-    print("\n✓ GrainRouter Phase 1-2 ready for integration with Phase3EOrchestrator")
+    print("\n✓ GrainRouter Phase 1-2 ready for integration with QueryOrchestrator")

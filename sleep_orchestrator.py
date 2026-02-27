@@ -14,12 +14,13 @@ Each stage runs 1-4x per night, produces outputs for next stage.
 
 from pathlib import Path
 from typing import Dict, Optional, Any
-from datetime import datetime
+from datetime import datetime, UTC
 import json
 import time
 
 from sleep_consolidator import DreamBucketConsolidator
 from dream_bucket import DreamBucketWriter, DreamBucketReader
+from sleep_cleanup_archive import SleepCleanupArchiver
 
 
 class SleepOrchestrator:
@@ -55,7 +56,7 @@ class SleepOrchestrator:
         
         start_time = time.perf_counter()
         report = {
-            'started_at': datetime.utcnow().isoformat() + 'Z',
+            'started_at': datetime.now(UTC).isoformat(),
             'stages': {},
             'total_time_seconds': 0,
         }
@@ -104,14 +105,28 @@ class SleepOrchestrator:
             print(f"  ✗ Failed: {e}")
             report['stages']['stage_4'] = {'error': str(e)}
         
-        print("\n[STAGE 5/6] Observation Promotion (planned)")
-        print("  ⏳ Not yet implemented")
+        print("\n[STAGE 5/6] Observation Promotion")
+        stage5_start = time.perf_counter()
+        try:
+            report['stages']['stage_5'] = self.run_stage_5()
+            report['stages']['stage_5']['time_seconds'] = time.perf_counter() - stage5_start
+            print(f"  ✓ Complete ({report['stages']['stage_5']['time_seconds']:.1f}s)")
+        except Exception as e:
+            print(f"  ✗ Failed: {e}")
+            report['stages']['stage_5'] = {'error': str(e)}
         
-        print("\n[STAGE 6/6] Cleanup & Archive (planned)")
-        print("  ⏳ Not yet implemented")
+        print("\n[STAGE 6/6] Cleanup & Archive")
+        stage6_start = time.perf_counter()
+        try:
+            report['stages']['stage_6'] = self.run_stage_6()
+            report['stages']['stage_6']['time_seconds'] = time.perf_counter() - stage6_start
+            print(f"  ✓ Complete ({report['stages']['stage_6']['time_seconds']:.1f}s)")
+        except Exception as e:
+            print(f"  ✗ Failed: {e}")
+            report['stages']['stage_6'] = {'error': str(e)}
         
         # Finalize report
-        report['completed_at'] = datetime.utcnow().isoformat() + 'Z'
+        report['completed_at'] = datetime.now(UTC).isoformat()
         report['total_time_seconds'] = time.perf_counter() - start_time
         
         print("\n" + "="*70)
@@ -183,6 +198,43 @@ class SleepOrchestrator:
         from sleep_question_generation import QuestionGenerator
         generator = QuestionGenerator(str(self.dream_bucket_dir))
         return generator.generate_questions()
+    
+    def run_stage_5(self) -> Dict[str, Any]:
+        """
+        Stage 5: Observation Promotion
+        
+        Executes investigations and promotes validated findings:
+        - Track question investigation status
+        - Collect investigation results
+        - Validate against success criteria
+        - Promote successful findings to observations
+        - Track learning progress
+        
+        Returns:
+            Report dict with promotion statistics
+        """
+        from sleep_observation_promotion import ObservationPromoter
+        promoter = ObservationPromoter(str(self.dream_bucket_dir))
+        return promoter.promote_observations()
+    
+    def run_stage_6(self) -> Dict[str, Any]:
+        """
+        Stage 6: Cleanup & Archive
+        
+        Archive live logs, consolidate learning progress, and health check:
+        - Compress and archive session logs to cold storage
+        - Consolidate learning metrics across sessions
+        - Clean up and consolidate indices
+        - Generate system health report
+        - Prepare for next session
+        
+        Returns:
+            Report dict with archive and health statistics
+        """
+        archiver = SleepCleanupArchiver(str(self.dream_bucket_dir))
+        now = datetime.now()
+        session_id = f"sleep_{now.strftime('%Y_%m_%d')}"
+        return archiver.cleanup_and_archive(session_id)
     
     def run_stage_1_only(self) -> Dict[str, Any]:
         """

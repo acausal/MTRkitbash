@@ -92,7 +92,7 @@ class DreamBucketWriter:
         
         Args:
             log_type: One of "false_positives", "collisions", "violations", 
-                     "hypotheses", "traces", "pending_questions"
+                     "hypotheses", "traces", "pending_questions", "validated_observations"
             record: Dict to append (will be JSON-serialized)
         
         Returns:
@@ -100,7 +100,7 @@ class DreamBucketWriter:
         """
         valid_types = {
             "false_positives", "collisions", "violations", 
-            "hypotheses", "traces", "pending_questions"
+            "hypotheses", "traces", "pending_questions", "validated_observations"
         }
         
         if log_type not in valid_types:
@@ -130,7 +130,8 @@ class DreamBucketWriter:
         """
         valid_indices = {
             "collision_index", "false_positive_by_grain", "violation_timeline",
-            "collision_clusters", "anomaly_timeline", "hypothesis_graph", "observations"
+            "collision_clusters", "anomaly_timeline", "hypothesis_graph", "observations",
+            "learning_summary", "system_health"
         }
         
         if index_name not in valid_indices:
