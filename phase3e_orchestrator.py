@@ -308,32 +308,33 @@ class Phase3EOrchestrator:
                     pass  # Hat may not be a valid value, skip
             
             # Search grains with L3 cache preference (NEW)
-            grain_results = self.grain_router.search_grains_with_cache(
-                query_concepts=query_concepts
+            grain_search_results = self.grain_router.search_grains(
+                query_concepts=query_concepts,
+                recent_grains=self.recent_grains
             )
             
             grain_latency_ms = (time.perf_counter() - grain_start) * 1000
             
-            if grain_results:
-                # Take top result
-                top_grain = grain_results[0]
-                top_grain_id = top_grain.get('grain_id')
+            if grain_search_results:
+                # Take top result (grain_id, score)
+                top_grain_id, top_score = grain_search_results[0]
+                top_grain = self.grain_router.lookup_cached(top_grain_id)
                 
                 if top_grain:
                     grain_facts = [{
                         'grain_id': top_grain_id,
                         'fact_id': top_grain.get('fact_id'),
                         'confidence': top_grain.get('confidence', 0.0),
-                        'from_cache': top_grain.get('from_cache', False),
-                        'latency_ms': top_grain.get('latency_ms', 0.0),
+                        'from_cache': True,
+                        'latency_ms': grain_latency_ms,
                         'score': top_score,
                         'source': 'crystallized_grain',
                     }]
                     
                     # Track for co-occurrence learning
                     self.recent_grains.append(top_grain_id)
-                    if grain.get('fact_id'):
-                        fact_ids.add(grain['fact_id'])
+                    if top_grain.get('fact_id'):
+                        fact_ids.add(top_grain['fact_id'])
         
         # ====================================================================
         # PHASE 3: MTR INFERENCE (Temporal reasoning)

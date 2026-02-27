@@ -348,8 +348,8 @@ class GrainRouter:
             
             # Phase 1.5: CTR boost (grains with high success rate)
             ctr_data = self.grain_ctr.get(grain_id, {})
-            if ctr_data['selected'] > 5:  # Threshold for meaningful data
-                success_rate = ctr_data['good'] / ctr_data['selected']
+            if ctr_data.get('selected', 0) > 5:  # Threshold for meaningful data
+                success_rate = ctr_data.get('good', 0) / ctr_data.get('selected', 1)
                 score += success_rate * 0.10  # Up to +0.10 boost
             
             if score > 0:
