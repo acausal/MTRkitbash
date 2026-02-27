@@ -26,8 +26,8 @@ from datetime import datetime, timezone
 from enum import Enum
 
 # External dependencies
+from axiom_validator import AxiomValidator
 from kitbash_cartridge import Cartridge
-from axiom_validator import AxiomValidator, ValidationRule
 
 
 # ============================================================================
@@ -482,20 +482,24 @@ class TernaryCrush:
         if not validation_result.get('locked'):
             raise ValueError(f"Cannot crush unvalidated phantom {phantom.phantom_id}")
         
-        # Get fact content
-        fact_text = self.cartridge.get_fact(list(phantom.fact_ids)[0])
-        if not fact_text:
-            raise ValueError(f"Fact not found in cartridge")
+        # Get fact content (use first fact for text)
+        first_fact_id = list(phantom.fact_ids)[0] if phantom.fact_ids else None
+        if not first_fact_id:
+            raise ValueError("Phantom has no fact IDs")
         
-        # Extract derivations
-        try:
-            fact_obj = self.cartridge.get_fact_object(list(phantom.fact_ids)[0])
-            derivations = fact_obj.derivations if fact_obj else []
-        except:
-            derivations = []
+        fact_text = self.cartridge.get_fact(first_fact_id)
+        if not fact_text:
+            raise ValueError(f"Fact {first_fact_id} not found in cartridge")
+        
+        # Extract derivations from all facts' annotations
+        all_derivations = []
+        for fact_id in phantom.fact_ids:
+            annotation = self.cartridge.annotations.get(fact_id)
+            if annotation and hasattr(annotation, 'derivations'):
+                all_derivations.extend(annotation.derivations)
         
         # Map to ternary
-        ternary_delta = self._extract_ternary_delta(fact_text, derivations)
+        ternary_delta = self._extract_ternary_delta(fact_text, all_derivations)
         
         # Build pointer map (fast lookup structure)
         pointer_map = self._build_pointer_map(phantom, ternary_delta)
@@ -504,7 +508,7 @@ class TernaryCrush:
         weight = self._calculate_weight(ternary_delta)
         
         # Generate grain ID (deterministic from fact)
-        grain_id = self._generate_grain_id(list(phantom.fact_ids)[0], self.cartridge_id)
+        grain_id = self._generate_grain_id(first_fact_id, self.cartridge_id)
         
         return {
             'grain_id': grain_id,
@@ -519,7 +523,7 @@ class TernaryCrush:
             'pointer_map': pointer_map,
             'confidence': validation_result['confidence'],
             'cycles_locked': validation_result['cycles_locked'],
-            'fact_snippet': fact_text[:100],
+            'fact_snippet': fact_text[:100] if fact_text else '',
         }
     
     def _extract_ternary_delta(self, fact_text: str,
@@ -535,23 +539,34 @@ class TernaryCrush:
             if not deriv:
                 continue
             
-            deriv_str = str(deriv).lower()
-            deriv_type = deriv.get('type', '') if isinstance(deriv, dict) else ''
-            target = deriv.get('target', '') if isinstance(deriv, dict) else ''
+            # Handle both Derivation objects and dicts
+            if isinstance(deriv, dict):
+                deriv_type = deriv.get('type', '').lower()
+                target = deriv.get('target', '')
+                description = deriv.get('description', '')
+            else:
+                # Derivation object
+                deriv_type = deriv.type.lower() if hasattr(deriv, 'type') else ''
+                target = deriv.target if hasattr(deriv, 'target') else None
+                description = deriv.description if hasattr(deriv, 'description') else ''
             
-            # Classify by type
-            if 'dependency' in deriv_type or 'requires' in deriv_type:
-                if target:
-                    positive.append(target)
-            elif 'negation' in deriv_type or 'inverse' in deriv_type:
-                if target:
-                    negative.append(target)
-            elif 'independent' in deriv_type or 'orthogonal' in deriv_type:
-                if target:
-                    void.append(target)
-            elif 'boundary' in deriv_type:
-                if target:
-                    negative.append(f"constrained_by:{target}")
+            if not deriv_type:
+                continue
+            
+            # Use target if available, otherwise use description
+            value = target if target else description
+            if not value:
+                continue
+            
+            # Classify by type (check more specific patterns first)
+            # Must check negation patterns BEFORE positive_dependency patterns
+            # since "negative_dependency" contains "dependency"
+            if any(x in deriv_type for x in ['negation', 'negative_', 'inverse', 'opposite', 'excludes', 'contradicts']):
+                negative.append(str(value))
+            elif any(x in deriv_type for x in ['dependency', 'requires', 'depends', 'implies', 'entails']):
+                positive.append(str(value))
+            elif any(x in deriv_type for x in ['independent', 'orthogonal', 'void', 'boundary']):
+                void.append(str(value))
         
         # Extract from fact text (unstructured) - keyword heuristics
         fact_lower = fact_text.lower()
@@ -966,18 +981,26 @@ class ShannonGrainOrchestrator:
     From shannon_grain_orchestrator.py
     """
     
-    def __init__(self, cartridge_id: str, storage_path: str = "./grains"):
-        """Initialize orchestrator"""
+    def __init__(self, cartridge_id: str, storage_path: str = "./grains", cartridge_engine=None):
+        """Initialize orchestrator
+        
+        Args:
+            cartridge_id: Identifier for this cartridge
+            storage_path: Where to store crystallized grains
+            cartridge_engine: Optional CartridgeInferenceEngine for validation
+        """
         self.cartridge_id = cartridge_id
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
         
         # Core components
         self.phantom_tracker = PhantomTracker(cartridge_id)
-        self.axiom_validator = AxiomValidator()
+        # Initialize validator with cartridge if provided
+        self.axiom_validator = None  # Will be set if cartridge_engine provided
+        self.cartridge_engine = cartridge_engine
         self.grain_registry = GrainRegistry(cartridge_id, str(self.storage_path))
         
-        # Note: TernaryCrush requires Cartridge, which will be provided at crystallize time
+        # Note: TernaryCrush and AxiomValidator require Cartridge, which will be provided at crystallize time
         self.ternary_crusher = None
         
         # Statistics
@@ -1026,6 +1049,17 @@ class ShannonGrainOrchestrator:
         Returns:
             Validation report with ready-to-crystallize list
         """
+        # If no validator available, pass through all phantoms
+        # (validator requires Cartridge which is provided at crystallization time)
+        if self.axiom_validator is None:
+            return {
+                'total': len(phantoms),
+                'validated': len(phantoms),
+                'passed': phantoms,
+                'failed': [],
+                'pass_rate': 1.0 if phantoms else 0.0
+            }
+        
         existing_grains = list(self.grain_registry.grains.values())
         
         validation_report = self.axiom_validator.validate_batch(

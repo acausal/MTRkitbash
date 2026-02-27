@@ -37,7 +37,7 @@ from typing import Optional, Dict, Any, Tuple, Set
 from dataclasses import dataclass
 import time
 
-from MTR_Phase55_Engine import KitbashMTREngine
+from MTR_v5_5_NN import KitbashMTREngine
 from mtr_state_manager import MTRStateCheckpoint
 from cartridge_loader import CartridgeInferenceEngine, CartridgeInferenceRequest
 
@@ -45,11 +45,13 @@ from cartridge_loader import CartridgeInferenceEngine, CartridgeInferenceRequest
 try:
     from grain_system import ShannonGrainOrchestrator
     from grain_router import GrainRouter
+    from grain_activation import Hat
     from mtr_grain_bridge import MTRGrainUnifiedPipeline, HatKappaMapper
     GRAIN_SYSTEM_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     GRAIN_SYSTEM_AVAILABLE = False
-    print("Warning: Grain system not available. Running in MTR-only mode.")
+    print(f"Warning: Grain system not available. Error: {e}")
+    print("Running in MTR-only mode.")
 
 
 @dataclass
@@ -160,10 +162,7 @@ class Phase3EOrchestrator:
         
         if self.state_manager.exists():
             print("   ✓ Previous state found, loading...")
-            self.mtr_state, metadata = self.state_manager.load(
-                device=device,
-                cartridge_engine=self.cartridge_engine  # Restore cartridge learning
-            )
+            self.mtr_state, metadata = self.state_manager.load(device=device)
             print(f"     Session: {metadata.get('session_id')}")
             print(f"     MTR time: {metadata.get('time')} (cumulative queries)")
         else:
@@ -182,7 +181,8 @@ class Phase3EOrchestrator:
             # Phantom tracker + crystallization orchestrator
             self.grain_orchestrator = ShannonGrainOrchestrator(
                 cartridge_id="default",
-                storage_path=grain_storage_dir
+                storage_path=grain_storage_dir,
+                cartridge_engine=self.cartridge_engine
             )
             print(f"   ✓ ShannonGrainOrchestrator initialized")
             
@@ -194,15 +194,17 @@ class Phase3EOrchestrator:
             print(f"   ✓ GrainRouter loaded {self.grain_router.total_grains} grains")
             
             # Unified MTR↔Grain bridge
+            # Get first cartridge for crushing (TODO: support multiple cartridges)
+            first_cartridge = next(iter(self.cartridge_engine.registry.cartridges.values())) if self.cartridge_engine.registry.cartridges else None
             self.mtr_grain_pipeline = MTRGrainUnifiedPipeline(
                 mtr_grain_orchestrator=self.grain_orchestrator,
                 grain_router=self.grain_router,
-                trigger_interval=100,  # Crystallize every 100 queries
-                cartridge=self.cartridge_engine.registry  # For crushing phantoms
+                trigger_interval=51,  # Crystallize at query 51 (after 50 cycles for locking)
+                cartridge=first_cartridge  # Pass actual CartridgeLoader, not registry
             )
             print(f"   ✓ MTRGrainUnifiedPipeline initialized")
             print(f"   ✓ Phantom tracking + crystallization enabled")
-            print(f"   ✓ Trigger interval: 100 queries")
+            print(f"   ✓ Trigger interval: 51 queries (after phantom locking)")
         else:
             print("\n4. Grain System: DISABLED (running MTR-only mode)")
         
@@ -246,8 +248,7 @@ class Phase3EOrchestrator:
         cartridge_request = CartridgeInferenceRequest(context.query_text)
         cartridge_response = self.cartridge_engine.query(
             cartridge_request, 
-            limit=3,
-            recent_facts=self.recent_facts[-5:] if self.recent_facts else None  # Phase 1 boost
+            limit=3
         )
         
         cartridge_latency_ms = (time.perf_counter() - cartridge_start) * 1000
@@ -277,23 +278,32 @@ class Phase3EOrchestrator:
             # Extract query concepts
             query_concepts = context.query_text.lower().split()[:5]
             
-            # Search grains with Phase 1 boosting
-            grain_results = self.grain_router.search_grains(
-                query_concepts=query_concepts,
-                recent_grains=self.recent_grains[-3:] if self.recent_grains else None
+            # Set hat context before grain search
+            if context.hat and GRAIN_SYSTEM_AVAILABLE:
+                try:
+                    self.grain_router.set_context_hat(context.hat)
+                except:
+                    pass  # Hat may not be a valid value, skip
+            
+            # Search grains with L3 cache preference (NEW)
+            grain_results = self.grain_router.search_grains_with_cache(
+                query_concepts=query_concepts
             )
             
             grain_latency_ms = (time.perf_counter() - grain_start) * 1000
             
             if grain_results:
-                top_grain_id, top_score = grain_results[0]
-                grain = self.grain_router.grains.get(top_grain_id)
+                # Take top result
+                top_grain = grain_results[0]
+                top_grain_id = top_grain.get('grain_id')
                 
-                if grain:
+                if top_grain:
                     grain_facts = [{
                         'grain_id': top_grain_id,
-                        'fact_id': grain.get('fact_id'),
-                        'confidence': grain.get('confidence', 0.0),
+                        'fact_id': top_grain.get('fact_id'),
+                        'confidence': top_grain.get('confidence', 0.0),
+                        'from_cache': top_grain.get('from_cache', False),
+                        'latency_ms': top_grain.get('latency_ms', 0.0),
                         'score': top_score,
                         'source': 'crystallized_grain',
                     }]
@@ -367,6 +377,10 @@ class Phase3EOrchestrator:
                 token_ids, self.mtr_state, kappa
             )
             
+            # Advance phantom cycle from PREVIOUS query (so we're always one cycle ahead)
+            if self.query_count > 0:  # Don't advance on first query
+                self.mtr_grain_pipeline.advance_phantom_cycle()
+            
             # Log to phantom tracker + check for crystallization
             pipeline_metadata = self.mtr_grain_pipeline.process_mtr_query(
                 fact_ids=fact_ids,
@@ -379,9 +393,18 @@ class Phase3EOrchestrator:
             
             crystallization_report = pipeline_metadata.get('crystallization')
             
-            # Advance phantom cycle periodically
-            if self.query_count % 100 == 0:
-                self.mtr_grain_pipeline.advance_phantom_cycle()
+            # Activate newly crystallized grains into L3 cache (NEW)
+            if crystallization_report and self.grain_router:
+                newly_crystallized = crystallization_report.get('crystallized_grains', [])
+                if newly_crystallized:
+                    grain_ids = [g.get('grain_id') for g in newly_crystallized if g.get('grain_id')]
+                    if grain_ids:
+                        activation_result = self.grain_router.activate_grains(grain_ids)
+                        # Optionally log activation
+                        # print(f"  ✓ Activated {activation_result['loaded']} grains")
+            
+            # Advance phantom cycle after each query (needed for locking)
+            self.mtr_grain_pipeline.advance_phantom_cycle()
         
         # ====================================================================
         # PHASE 6: RESPONSE GENERATION
@@ -464,14 +487,13 @@ class Phase3EOrchestrator:
         
         metadata['query_count'] = self.query_count
         
-        # Save MTR state (includes cartridge learning via PATCH_2)
+        # Save MTR state
         self.state_manager.save(
             self.mtr_state,
             d_model=self.mtr_engine.d_model,
             d_state=self.mtr_engine.d_state,
             session_id=session_id,
-            metadata=metadata,
-            cartridge_engine=self.cartridge_engine  # Saves learning artifacts
+            metadata=metadata
         )
         
         print(f"✓ MTR state saved")
@@ -504,6 +526,7 @@ class Phase3EOrchestrator:
                 'total_grains': self.grain_router.total_grains,
                 'grain_graph': self.grain_router.get_graph_density(),
                 'ctr_stats': self.grain_router.get_ctr_stats(),
+                'activation': self.grain_router.get_activation_stats()['manual_stats'],  # NEW
             }
         
         if self.mtr_grain_pipeline:
@@ -535,6 +558,18 @@ class Phase3EOrchestrator:
             print(f"  Total grains: {stats['grain_router']['total_grains']}")
             print(f"  Graph nodes: {stats['grain_router']['grain_graph']['nodes']}")
             print(f"  Graph edges: {stats['grain_router']['grain_graph']['edges']}")
+            
+            # NEW: Grain activation stats
+            if 'activation' in stats['grain_router']:
+                activation = stats['grain_router']['activation']
+                print(f"\nGrain Activation (L3 Cache):")
+                print(f"  Total activations: {activation['total_activations']}")
+                print(f"  Grains activated: {activation['grains_activated']}")
+                print(f"  Cache hits: {activation['cache_hits']}")
+                print(f"  Cache misses: {activation['cache_misses']}")
+                if activation['cache_hits'] + activation['cache_misses'] > 0:
+                    hit_rate = activation['cache_hits'] / (activation['cache_hits'] + activation['cache_misses'])
+                    print(f"  Hit rate: {hit_rate:.1%}")
         
         if 'mtr_grain_pipeline' in stats:
             pipeline = stats['mtr_grain_pipeline']

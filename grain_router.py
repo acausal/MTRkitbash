@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Dict, Optional, List, Any, Tuple
 from collections import defaultdict
 from datetime import datetime
+from grain_activation import GrainActivation
 
 
 class GrainRouter:
@@ -79,6 +80,9 @@ class GrainRouter:
         self.load_time_ms = 0
         self.total_grains = 0
         self.total_size_bytes = 0
+        
+        # Phase 3E.3: L3 cache for hot grains
+        self.grain_activation = GrainActivation(max_cache_mb=1.0)
         
         # Load all grains
         self._load_grains()
@@ -150,7 +154,76 @@ class GrainRouter:
         self.load_time_ms = (time.perf_counter() - start_time) * 1000
         self.total_grains = grain_count
     
-    def lookup(self, fact_id: int) -> Optional[Dict[str, Any]]:
+    # ========================================================================
+    # Phase 3E.3: L3 CACHE METHODS
+    # ========================================================================
+    
+    def activate_grains(self, grain_ids: List[str]) -> Dict[str, bool]:
+        """
+        Activate grains into L3 cache after crystallization.
+        
+        Args:
+            grain_ids: List of grain IDs to activate
+        
+        Returns:
+            Dict mapping grain_id -> activation_success
+        """
+        results = {}
+        for grain_id in grain_ids:
+            grain = self.grains.get(grain_id)
+            if grain:
+                success = self.grain_activation.load_grain(grain)
+                results[grain_id] = success
+            else:
+                results[grain_id] = False
+        
+        return results
+    
+    def lookup_cached(self, grain_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Look up grain in cache with fallback to disk.
+        
+        Fast path (L3 cache): <0.1ms on hit
+        Slow path (disk): ~1-2ms on miss
+        
+        Args:
+            grain_id: ID of grain to find
+        
+        Returns:
+            Grain dictionary or None if not found
+        """
+        # Try cache first (fast)
+        grain = self.grain_activation.lookup(grain_id)
+        if grain:
+            return grain
+        
+        # Fall back to disk (slow)
+        return self.grains.get(grain_id)
+    
+    def batch_activate(self, grain_ids: List[str]) -> None:
+        """
+        Batch activate multiple grains.
+        
+        Args:
+            grain_ids: List of grain IDs to activate
+        """
+        for grain_id in grain_ids:
+            grain = self.grains.get(grain_id)
+            if grain:
+                self.grain_activation.load_grain(grain)
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get L3 cache statistics."""
+        return self.grain_activation.get_stats()
+    
+    def print_cache_stats(self) -> None:
+        """Print formatted cache statistics."""
+        self.grain_activation.print_stats()
+    
+    # ========================================================================
+    # ORIGINAL METHODS (existing)
+    # ========================================================================
+
         """
         Look up a grain by fact_id.
         

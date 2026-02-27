@@ -71,10 +71,13 @@ class MTRPhantomBridge:
             return
         
         # Convert MTR error to confidence
-        # error_signal is (batch, seq_len, 1), take mean across sequence
+        # error_signal can be in various ranges, normalize it
         try:
-            error_mean = float(error_signal.mean().clamp(0, 1))
-            confidence = 1.0 - error_mean  # Invert: low error = high confidence
+            error_mean = float(error_signal.mean())
+            # Normalize error to 0-1 range (clamp high errors)
+            # Assume errors in range 0-10 are normal; values >10 = very high error
+            normalized_error = min(error_mean / 10.0, 1.0)  # Clamp to 0-1
+            confidence = max(0.0, 1.0 - normalized_error)  # Invert: low error = high confidence
         except:
             confidence = 0.5  # Safe default
         
@@ -131,7 +134,7 @@ class MTRPhantomBridge:
             
             # Use salience to decide if we extract from this layer
             try:
-                salience_val = float(salience.mean().clamp(0, 1))
+                salience_val = float(salience.detach().mean().clamp(0, 1))
                 if salience_val > 0.3:  # Only extract if salient
                     concept = f"{layer_name}:{salience_val:.2f}"
                     concepts.append(concept)
@@ -434,6 +437,30 @@ class MTRGrainUnifiedPipeline:
     def advance_phantom_cycle(self) -> None:
         """Advance phantom tracker cycle manually."""
         self.phantom_bridge.advance_cycle()
+    
+    def search_grains(self, query_concepts: List[str]) -> List[Dict]:
+        """
+        Search for grains using grain router's cache-aware search.
+        
+        Args:
+            query_concepts: Concepts from query
+            
+        Returns:
+            List of grains with cache hit metadata
+        """
+        if not self.grain_router:
+            return []
+        
+        # Use cache-aware search from grain router
+        grains = self.grain_router.search_grains_with_cache(query_concepts)
+        
+        # Log cache performance
+        if grains:
+            cached_count = sum(1 for g in grains if g.get('from_cache'))
+            disk_count = len(grains) - cached_count
+            # Optional: print(f"  Grain search: {cached_count} cached, {disk_count} disk")
+        
+        return grains
     
     def get_full_stats(self) -> Dict[str, Any]:
         """Get complete pipeline statistics."""
