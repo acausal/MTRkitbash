@@ -90,33 +90,42 @@ class GrainRouter:
         self._load_grains()
     
     def _load_grains(self) -> None:
-        """Load all crystallized grains from disk."""
+        """Load all crystallized grains from disk.
+        
+        Supports two storage layouts:
+        1. Flat: grains/ directory at root level (grain_*.json, sg_*.json, etc.)
+        2. By-cartridge: cartridges/*/grains/ directories
+        
+        Tries flat first, then falls back to by-cartridge.
+        """
         start_time = time.perf_counter()
         
         # Find all grain files
         grain_count = 0
         duplicates = []
         
-        for cartridge_dir in self.cartridges_dir.glob("*.kbc"):
-            grains_dir = cartridge_dir / "grains"
-            
-            if not grains_dir.exists():
-                continue
-            
-            cartridge_id = cartridge_dir.name.replace('.kbc', '')
-            
-            for grain_file in grains_dir.glob("*.json"):
+        # Strategy 1: Try flat grain storage (grains/ at root)
+        # This is the current structure: B:\...\grains\grain_*.json
+        grains_root = Path(self.cartridges_dir).parent / "grains"
+        
+        if grains_root.exists():
+            # Load from flat structure
+            for grain_file in grains_root.glob("*.json"):
+                # Skip system files like phantom_tracker.json
+                if grain_file.stem == "phantom_tracker":
+                    continue
+                
                 try:
                     with open(grain_file, 'r') as f:
                         grain = json.load(f)
                     
-                    grain_id = grain.get('grain_id')
+                    grain_id = grain.get('grain_id') or grain_file.stem
                     if not grain_id:
                         continue
                     
                     # Check for duplicate grain_id
                     if grain_id in self.grains:
-                        duplicates.append((grain_id, cartridge_id, grain_file.name))
+                        duplicates.append((grain_id, "flat", grain_file.name))
                         continue
                     
                     # Store grain
@@ -127,7 +136,8 @@ class GrainRouter:
                     if fact_id is not None:
                         self.grain_by_fact[fact_id] = grain_id
                     
-                    # Index by cartridge
+                    # Index by cartridge (use source cartridge if available, else 'unknown')
+                    cartridge_id = grain.get('cartridge_id', 'unknown')
                     self.grain_by_cartridge[cartridge_id].append(grain_id)
                     
                     # Track confidence
@@ -141,11 +151,58 @@ class GrainRouter:
                 except Exception as e:
                     print(f"Warning: Could not load grain {grain_file}: {e}")
         
+        # Strategy 2: If no flat structure, try by-cartridge structure
+        # This is the fallback: cartridges/*/grains/ directories
+        if grain_count == 0:
+            for cartridge_dir in self.cartridges_dir.glob("*.kbc"):
+                grains_dir = cartridge_dir / "grains"
+                
+                if not grains_dir.exists():
+                    continue
+                
+                cartridge_id = cartridge_dir.name.replace('.kbc', '')
+                
+                for grain_file in grains_dir.glob("*.json"):
+                    try:
+                        with open(grain_file, 'r') as f:
+                            grain = json.load(f)
+                        
+                        grain_id = grain.get('grain_id')
+                        if not grain_id:
+                            continue
+                        
+                        # Check for duplicate grain_id
+                        if grain_id in self.grains:
+                            duplicates.append((grain_id, cartridge_id, grain_file.name))
+                            continue
+                        
+                        # Store grain
+                        self.grains[grain_id] = grain
+                        
+                        # Index by fact_id
+                        fact_id = grain.get('fact_id')
+                        if fact_id is not None:
+                            self.grain_by_fact[fact_id] = grain_id
+                        
+                        # Index by cartridge
+                        self.grain_by_cartridge[cartridge_id].append(grain_id)
+                        
+                        # Track confidence
+                        confidence = grain.get('confidence', 0.0)
+                        self.grain_by_confidence.append((confidence, grain_id))
+                        
+                        # Statistics
+                        grain_count += 1
+                        self.total_size_bytes += grain_file.stat().st_size
+                    
+                    except Exception as e:
+                        print(f"Warning: Could not load grain {grain_file}: {e}")
+        
         # Report duplicates
         if duplicates:
             print(f"\nWarning: Found {len(duplicates)} duplicate grain_ids (skipped):")
-            for grain_id, cartridge, filename in duplicates[:10]:
-                print(f"  - {grain_id} in {cartridge}/{filename}")
+            for grain_id, location, filename in duplicates[:10]:
+                print(f"  - {grain_id} in {location}/{filename}")
             if len(duplicates) > 10:
                 print(f"  ... and {len(duplicates) - 10} more")
         
