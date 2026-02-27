@@ -45,16 +45,18 @@ class GrainRouter:
     - Learning: Non-blocking append to graph/CTR
     """
     
-    def __init__(self, cartridges_dir: str = "./cartridges", cartridge_engine=None):
+    def __init__(self, cartridges_dir: str = "./cartridges", cartridge_engine=None, dream_bucket_writer=None):
         """
         Initialize GrainRouter with Phase 1-2 learning infrastructure.
         
         Args:
             cartridges_dir: Path to cartridges directory
             cartridge_engine: Optional CartridgeInferenceEngine for unified learning
+            dream_bucket_writer: Optional DreamBucketWriter for false positive logging
         """
         self.cartridges_dir = Path(cartridges_dir)
         self.cartridge_engine = cartridge_engine  # PATCH_3: Reference to cartridge engine
+        self.dream_bucket_writer = dream_bucket_writer
         
         # Indices (original functionality)
         self.grains: Dict[str, Dict[str, Any]] = {}  # grain_id -> grain data
@@ -544,6 +546,43 @@ class GrainRouter:
             mtr_error=mtr_error,
             context=context
         )
+    
+    def log_mtr_feedback(self, query_text: str, returned_grain_id: str,
+                         error_signal: float, session_id: str = None) -> None:
+        """
+        Log false positive to dream bucket when MTR disagrees with grain lookup.
+        
+        Called after MTR provides error_signal feedback.
+        Logs if: grain confidence is high (>0.8) but MTR error is high (>0.3).
+        
+        Args:
+            query_text: User query text
+            returned_grain_id: Grain ID we returned
+            error_signal: MTR error signal (higher = more confused)
+            session_id: Optional session identifier
+        """
+        if self.dream_bucket_writer is None:
+            return
+        
+        grain = self.grains.get(returned_grain_id)
+        if grain is None:
+            return
+        
+        grain_confidence = grain.get('confidence', 0.5)
+        fact_id = grain.get('fact_id')
+        
+        # Log if confidence/error mismatch
+        if grain_confidence > 0.8 and error_signal > 0.3:
+            from dream_bucket import log_false_positive
+            log_false_positive(
+                self.dream_bucket_writer,
+                source_layer="grain",
+                query_text=query_text,
+                returned_id=fact_id if fact_id else int(returned_grain_id),
+                returned_confidence=grain_confidence,
+                error_signal=error_signal,
+                session_id=session_id
+            )
     
     # ========================================================================
     # DIAGNOSTICS & STATISTICS

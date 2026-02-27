@@ -492,6 +492,24 @@ class CartridgeRegistry:
         """Get a specific cartridge loader."""
         return self.cartridges.get(cartridge_id)
     
+    def get_fact_confidence(self, fact_id: int) -> float:
+        """
+        Get confidence score for a fact across all cartridges.
+        
+        Returns the confidence from whichever cartridge owns this fact.
+        
+        Args:
+            fact_id: Fact to look up
+        
+        Returns:
+            Confidence float (0.0-1.0), or 0.5 if not found (neutral)
+        """
+        for cartridge in self.cartridges.values():
+            fact = cartridge.get_fact(fact_id)
+            if fact:
+                return fact.confidence
+        return 0.5  # Unknown fact, neutral confidence
+    
     # ========================================================================
     # PHASE 1: FACT CO-OCCURRENCE GRAPH
     # ========================================================================
@@ -878,14 +896,24 @@ class CartridgeInferenceEngine:
     
     Wraps CartridgeRegistry to provide query interface for MTR integration.
     Handles all learning feedback: co-occurrence, anchors, CTR, seasonality.
+    
+    Now with dream bucket integration: logs false positives when MTR feedback
+    indicates confidence mismatch (high confidence search, high MTR error).
     """
     
-    def __init__(self, cartridges_dir: str = "./cartridges"):
-        """Initialize engine and load all cartridges."""
+    def __init__(self, cartridges_dir: str = "./cartridges", dream_bucket_writer=None):
+        """
+        Initialize engine and load all cartridges.
+        
+        Args:
+            cartridges_dir: Path to cartridges directory
+            dream_bucket_writer: Optional DreamBucketWriter for false positive logging
+        """
         self.registry = CartridgeRegistry(cartridges_dir)
         self.query_count = 0
         self.hits = 0
         self.misses = 0
+        self.dream_bucket_writer = dream_bucket_writer
         
         # Track recent facts for graph boost
         self._recent_facts_in_session = []
@@ -959,6 +987,38 @@ class CartridgeInferenceEngine:
             context: What project/context was this in
         """
         self.registry.log_fact_usage(fact_id, success, mtr_error, context)
+    
+    def log_mtr_feedback(self, query_text: str, returned_id: int, 
+                         error_signal: float, session_id: str = None) -> None:
+        """
+        Log false positive to dream bucket when MTR disagrees with search.
+        
+        Called after MTR provides error_signal feedback.
+        Logs if: we were confident (>0.8) but MTR error is high (>0.3).
+        
+        Args:
+            query_text: User query text
+            returned_id: Fact ID we returned
+            error_signal: MTR error signal (higher = more confused)
+            session_id: Optional session identifier
+        """
+        if self.dream_bucket_writer is None:
+            return
+        
+        returned_confidence = self.registry.get_fact_confidence(returned_id)
+        
+        # Log if confidence/error mismatch
+        if returned_confidence > 0.8 and error_signal > 0.3:
+            from dream_bucket import log_false_positive
+            log_false_positive(
+                self.dream_bucket_writer,
+                source_layer="cartridge",
+                query_text=query_text,
+                returned_id=returned_id,
+                returned_confidence=returned_confidence,
+                error_signal=error_signal,
+                session_id=session_id
+            )
     
     def get_stats(self) -> Dict[str, Any]:
         """Get engine statistics."""

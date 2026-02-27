@@ -108,7 +108,8 @@ class Phase3EOrchestrator:
                  state_dir: str = "data/state",
                  grain_storage_dir: str = "./grains",
                  device: str = "cpu",
-                 enable_grain_system: bool = True):
+                 enable_grain_system: bool = True,
+                 dream_bucket_dir: str = "data/subconscious/dream_bucket"):
         """
         Initialize Phase 3E orchestrator with full grain integration.
         
@@ -121,20 +122,39 @@ class Phase3EOrchestrator:
             grain_storage_dir: Where to store crystallized grains
             device: torch device (cpu, cuda)
             enable_grain_system: Enable grain crystallization pipeline
+            dream_bucket_dir: Path to dream bucket research signal archive
         """
         self.device = device
         self.state_dir = state_dir
         self.grain_storage_dir = grain_storage_dir
         self.enable_grain_system = enable_grain_system and GRAIN_SYSTEM_AVAILABLE
         
-        print("Phase 3E Initialization (MTR + Cartridges + Grains)")
+        print("Phase 3E Initialization (MTR + Cartridges + Grains + Dream Bucket)")
         print("="*70)
+        
+        # ====================================================================
+        # STEP 0: DREAM BUCKET (Research signal archive)
+        # ====================================================================
+        print("\n0. Initializing Dream Bucket...")
+        from dream_bucket import DreamBucketWriter, DreamBucketReader
+        try:
+            self.dream_bucket_writer = DreamBucketWriter(dream_bucket_dir)
+            self.dream_bucket_reader = DreamBucketReader(dream_bucket_dir)
+            print(f"   ✓ Dream bucket initialized at {dream_bucket_dir}")
+        except Exception as e:
+            print(f"   ⚠ Dream bucket initialization failed: {e}")
+            print("   ⚠ Continuing without dream bucket logging")
+            self.dream_bucket_writer = None
+            self.dream_bucket_reader = None
         
         # ====================================================================
         # STEP 1: CARTRIDGE ENGINE (Fact lookup + learning)
         # ====================================================================
         print("\n1. Loading CartridgeInferenceEngine...")
-        self.cartridge_engine = CartridgeInferenceEngine(cartridges_dir)
+        self.cartridge_engine = CartridgeInferenceEngine(
+            cartridges_dir,
+            dream_bucket_writer=self.dream_bucket_writer
+        )
         cart_stats = self.cartridge_engine.registry.get_stats()
         print(f"   ✓ {cart_stats['cartridge_count']} cartridges loaded")
         print(f"   ✓ {cart_stats['total_facts']} total facts")
@@ -147,7 +167,8 @@ class Phase3EOrchestrator:
         self.mtr_engine = KitbashMTREngine(
             vocab_size=vocab_size,
             d_model=d_model,
-            d_state=d_state
+            d_state=d_state,
+            dream_bucket_writer=self.dream_bucket_writer
         )
         self.mtr_engine = self.mtr_engine.to(device)
         print(f"   ✓ MTR initialized (vocab={vocab_size}, d_model={d_model}, d_state={d_state})")
@@ -189,7 +210,8 @@ class Phase3EOrchestrator:
             # Grain router (loads crystallized grains from disk)
             self.grain_router = GrainRouter(
                 cartridges_dir=cartridges_dir,
-                cartridge_engine=self.cartridge_engine
+                cartridge_engine=self.cartridge_engine,
+                dream_bucket_writer=self.dream_bucket_writer
             )
             print(f"   ✓ GrainRouter loaded {self.grain_router.total_grains} grains")
             

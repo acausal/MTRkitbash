@@ -399,11 +399,12 @@ class KitbashMTREngine(nn.Module):
     This is the neural core. Orchestration (routing to grains/cartridges/LLM) happens above.
     """
     
-    def __init__(self, vocab_size: int = 50257, d_model: int = 256, d_state: int = 128):
+    def __init__(self, vocab_size: int = 50257, d_model: int = 256, d_state: int = 128, dream_bucket_writer=None):
         super().__init__()
         self.vocab_size = vocab_size
         self.d_model = d_model
         self.d_state = d_state
+        self.dream_bucket_writer = dream_bucket_writer
         
         # Token embedding (no positional embedding—CoPENt handles position)
         self.embed = nn.Embedding(vocab_size, d_model)
@@ -487,6 +488,44 @@ class KitbashMTREngine(nn.Module):
         mtr_output, _, _ = self.mtr(x, state)
         
         return self.epistemic_router(mtr_output, copent_signal, kappa)
+    
+    def log_consistency_violation(self, returned_fact_id: int,
+                                  returned_confidence: float,
+                                  error_signal: float,
+                                  mtr_state_time: int = 0,
+                                  context: Optional[Dict[str, any]] = None,
+                                  session_id: Optional[str] = None) -> None:
+        """
+        Log consistency violation to dream bucket.
+        
+        When search returns high-confidence result but MTR error_signal is high,
+        that's a dissonance worth investigating.
+        
+        Args:
+            returned_fact_id: Fact/grain ID that was returned
+            returned_confidence: Search confidence score
+            error_signal: MTR error signal (higher = more confused)
+            mtr_state_time: Current MTR state time
+            context: Optional context dict
+            session_id: Optional session identifier
+        """
+        if self.dream_bucket_writer is None:
+            return
+        
+        # Log only if there's significant dissonance
+        if error_signal > 0.5 and returned_confidence > 0.8:
+            from dream_bucket import log_consistency_violation
+            log_consistency_violation(
+                self.dream_bucket_writer,
+                source_layer="mtr",
+                returned_fact_id=returned_fact_id,
+                returned_confidence=returned_confidence,
+                mtr_error_signal=error_signal,
+                mtr_state_time=mtr_state_time,
+                dissonance_type="high_confidence_low_coherence",
+                context=context,
+                session_id=session_id
+            )
 
 
 # ============================================================================
