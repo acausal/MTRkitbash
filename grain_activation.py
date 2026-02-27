@@ -8,7 +8,28 @@ Phase 3E.3 - Cache Integration Layer
 """
 
 from typing import Dict, Optional, Any, List
+from dataclasses import dataclass
 import json
+
+
+@dataclass
+class Hat:
+    """
+    Behavioral context for epistemic routing.
+    
+    The 'hat' represents behavioral mode that influences how MTR
+    processes queries and which epistemic layer to emphasize.
+    
+    Attributes:
+        mode: 'rigid' (precise), 'nominal' (balanced), or 'fluid' (creative)
+        project_context: Current project or domain
+        user_id: User identifier for personalization
+        session_id: Current session identifier
+    """
+    mode: str = "nominal"  # rigid, nominal, fluid
+    project_context: Optional[str] = None
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 class GrainActivation:
