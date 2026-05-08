@@ -1,0 +1,24 @@
+# Kitbash dependencies
+# Python 3.14+ required
+
+# Core Redis integration
+redis>=4.5.0,<6.0
+
+# Neural architecture (MTR v5.5, BitNet)
+torch>=2.0.0,<3.0
+
+# Standard library supplements (already in Python but pinning versions for clarity)
+# - dataclasses (3.7+)
+# - pathlib (3.4+)
+# - typing (3.5+)
+# - logging (2.3+)
+# - json (2.6+)
+# - sqlite3 (2.6+)
+# - tempfile (1.5.2+)
+# - tarfile (2.0+)
+
+# Notes:
+# - No numpy dependency (MTR uses torch directly)
+# - No optional ML frameworks (sklearn, transformers) at this phase
+# - urllib (for cartridge loading) is stdlib
+# - requests not currently used (removed from actual imports on inspection)
