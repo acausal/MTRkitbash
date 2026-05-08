@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional
 from interfaces.triage_agent import TriageAgent, TriageRequest, TriageDecision
 from interfaces.inference_engine import InferenceEngine, InferenceRequest, InferenceResponse
 from interfaces.mamba_context_service import MambaContextService, MambaContextRequest
-from memory.resonance_weights import ResonanceWeightService
+from resonance_weights import ResonanceWeightService
 from heartbeat_service import HeartbeatService
 from metabolism_scheduler import MetabolismScheduler
 

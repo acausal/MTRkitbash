@@ -24,7 +24,7 @@ from typing import Optional, Dict, Any
 from interfaces.triage_agent import TriageAgent
 from interfaces.inference_engine import InferenceEngine
 from interfaces.mamba_context_service import MambaContextService
-from memory.resonance_weights import ResonanceWeightService
+from resonance_weights import ResonanceWeightService
 from heartbeat_service import HeartbeatService
 
 from grain_engine import GrainEngine
@@ -193,18 +193,15 @@ def create_query_orchestrator(
     
     try:
         # Grain Engine
-        if grain_router:
-            grain_engine = GrainEngine(grain_router)
-            engines["GRAIN"] = grain_engine
-            logger.info(f"  ✓ GrainEngine created")
+        grain_engine = GrainEngine(cartridges_dir=cartridges_dir)
+        engines["GRAIN"] = grain_engine
+        logger.info(f"  ✓ GrainEngine created")
     except Exception as e:
         logger.warning(f"  ⚠ Failed to create GrainEngine: {e}")
     
     try:
         # Cartridge Engine
-        cartridge_engine = CartridgeEngine(
-            {name: cart for name, cart in cartridge_engine_phase3e.registry.cartridges.items()}
-        )
+        cartridge_engine = CartridgeEngine(cartridges_dir=cartridges_dir)
         engines["CARTRIDGE"] = cartridge_engine
         logger.info(f"  ✓ CartridgeEngine created")
     except Exception as e:
