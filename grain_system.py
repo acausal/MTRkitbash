@@ -119,11 +119,21 @@ class GrainMetadata:
     A crystallized grain: compressed representation of a persistent pattern.
     Stores ternary weights instead of full embeddings (90% size reduction).
     
+    PHASE 5A UPDATE (May 2026):
+    - grain_type: Distinguishes axioms (≥95%, immutable) from observations (70-95%, mutable)
+    - confidence: Primary confidence metric (replaces avg_confidence conceptually)
+    - confidence_mutable: Whether confidence can be updated by Dream Bucket
+    
     From shannon_grain.py
     """
     grain_id: str                     # Unique identifier
     source_phantom_id: str            # Which phantom crystallized into this
     cartridge_id: str                 # Source cartridge
+    
+    # ===== L1/L2 DISTINCTION (NEW - Phase 5A) =====
+    grain_type: str = "observation"   # "axiom" (≥95%, immutable) or "observation" (70-95%, mutable)
+    confidence: float = 0.0           # 0.0-1.0, primary confidence metric
+    confidence_mutable: bool = True   # False for axioms; True for observations
     
     # Ternary representation
     num_bits: int = 256               # Bit-sliced representation size
@@ -138,12 +148,16 @@ class GrainMetadata:
     # Quality metrics
     internal_hamming: float = 0.0     # Avg distance between cluster members
     weight_skew: float = 0.0          # Std dev / mean of weights
-    avg_confidence: float = 0.0       # Avg confidence of source observations
+    avg_confidence: float = 0.0       # DEPRECATED: use confidence instead
     observation_count: int = 0        # How many observations formed this
     
-    # Lifecycle
+    # Temporal tracking
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     crystallized_at: str = ""
+    last_hit: Optional[str] = None    # Last time this grain was activated
+    hit_count: int = 0                # Total activations
+    
+    # Lifecycle
     state: GrainState = GrainState.CANDIDATE
     epistemic_level: EpistemicLevel = EpistemicLevel.L2_AXIOMATIC
     
@@ -151,12 +165,35 @@ class GrainMetadata:
     bit_array_plus: bytes = b""       # Actual bit array for +1 weights
     bit_array_minus: bytes = b""      # Actual bit array for -1 weights
     
+    def __post_init__(self):
+        """Validate grain type and confidence relationship"""
+        if self.grain_type not in ("axiom", "observation"):
+            raise ValueError(f"Invalid grain_type: {self.grain_type}. Must be 'axiom' or 'observation'.")
+        
+        if self.grain_type == "axiom" and self.confidence < 0.95:
+            raise ValueError(f"Axiom grain must have confidence >= 0.95, got {self.confidence}")
+        
+        if self.grain_type == "observation" and not (0.70 <= self.confidence < 0.95):
+            raise ValueError(f"Observation grain must have confidence in [0.70, 0.95), got {self.confidence}")
+        
+        if self.grain_type == "axiom" and self.confidence_mutable:
+            raise ValueError("Axiom grains must have confidence_mutable=False")
+        
+        # Sync legacy avg_confidence with new confidence field
+        if self.avg_confidence == 0.0 and self.confidence > 0.0:
+            self.avg_confidence = self.confidence
+    
     def to_dict(self) -> dict:
-        """Convert to dictionary"""
+        """Convert to dictionary with L1/L2 stratification info"""
         return {
             "grain_id": self.grain_id,
             "source_phantom_id": self.source_phantom_id,
             "cartridge_id": self.cartridge_id,
+            # ===== L1/L2 INFO (NEW) =====
+            "grain_type": self.grain_type,
+            "confidence": round(self.confidence, 3),
+            "confidence_mutable": self.confidence_mutable,
+            # ===== TERNARY WEIGHTS =====
             "num_bits": self.num_bits,
             "weight_distribution": {
                 "positive": self.bits_positive,
@@ -407,6 +444,14 @@ class GrainRegistry:
         crystallized = self.get_grains_by_state(GrainState.CRYSTALLIZED)
         return crystallized + [self.grains[gid] for gid in active if gid not in active]
     
+    def get_axioms(self) -> List[GrainMetadata]:
+        """Return only axiom-type grains (grain_type='axiom')"""
+        return [g for g in self.grains.values() if hasattr(g, 'grain_type') and g.grain_type == "axiom"]
+    
+    def get_observations(self) -> List[GrainMetadata]:
+        """Return only observation-type grains (grain_type='observation')"""
+        return [g for g in self.grains.values() if hasattr(g, 'grain_type') and g.grain_type == "observation"]
+    
     def save_grain(self, grain: GrainMetadata) -> Path:
         """Save a grain to disk"""
         grain_path = self.storage_path / f"{grain.grain_id}.json"
@@ -430,10 +475,19 @@ class GrainRegistry:
         return grain_path
     
     def get_stats(self) -> Dict:
-        """Get registry statistics"""
+        """Get registry statistics with L1/L2 breakdown"""
+        axioms = self.get_axioms()
+        observations = self.get_observations()
+        
         return {
             "cartridge_id": self.cartridge_id,
             "total_grains": len(self.grains),
+            # ===== L1/L2 BREAKDOWN (NEW) =====
+            "axioms": len(axioms),
+            "observations": len(observations),
+            "avg_confidence_axiom": statistics.mean([g.confidence for g in axioms]) if axioms else 0.0,
+            "avg_confidence_observation": statistics.mean([g.confidence for g in observations]) if observations else 0.0,
+            # ===== EXISTING STATS =====
             "by_state": {
                 state.value: len(grain_ids)
                 for state, grain_ids in self.grain_state_index.items()
@@ -1100,14 +1154,29 @@ class ShannonGrainOrchestrator:
             try:
                 grain_dict = self.ternary_crusher.crush_phantom(phantom, phantom_info)
                 
-                # Convert to GrainMetadata
+                # Determine grain type based on confidence (NEW - Phase 5A)
+                confidence = phantom_info.get('confidence', phantom.avg_confidence())
+                if confidence >= 0.95:
+                    grain_type = "axiom"
+                    confidence_mutable = False
+                elif confidence >= 0.70:
+                    grain_type = "observation"
+                    confidence_mutable = True
+                else:
+                    # Don't crystallize sub-0.70 confidence
+                    continue
+                
+                # Convert to GrainMetadata with L1/L2 typing
                 grain = GrainMetadata(
                     grain_id=grain_dict['grain_id'],
                     source_phantom_id=phantom.phantom_id,
                     cartridge_id=self.cartridge_id,
+                    grain_type=grain_type,          # NEW: L1/L2 distinction
+                    confidence=confidence,          # NEW: primary confidence metric
+                    confidence_mutable=confidence_mutable,  # NEW: mutability flag
                     state=GrainState.CRYSTALLIZED,
                     crystallized_at=datetime.now(timezone.utc).isoformat(),
-                    avg_confidence=phantom_info.get('confidence', 0.0),
+                    avg_confidence=confidence,      # Legacy compatibility
                     observation_count=phantom.hit_count,
                 )
                 
@@ -1179,6 +1248,8 @@ class ShannonGrainOrchestrator:
         crystallized_grains = self.crystallize_grains(ready_to_crystallize, cartridge)
         report["phase_3_crystallization"] = {
             "grains_created": len(crystallized_grains),
+            "axioms_created": len([g for g in crystallized_grains if g.grain_type == "axiom"]),
+            "observations_created": len([g for g in crystallized_grains if g.grain_type == "observation"]),
             "total_size_mb": sum(g.size_mb() for g in crystallized_grains),
             "latency_ms": round((time.time() - t3_start) * 1000, 2),
         }
@@ -1201,6 +1272,26 @@ class ShannonGrainOrchestrator:
             "grain_registry": self.grain_registry.get_stats(),
         })
         return stats
+    
+    def get_locked_phantoms(self, top_n: int = 10) -> List[Dict[str, Any]]:
+        """
+        Return top-N locked phantoms for L2 auditability.
+        
+        Used by L2WorkingTheoryService (Phase 5A) to expose active patterns.
+        Called by sleep pipeline to understand emerging hypotheses.
+        """
+        all_locked = self.phantom_tracker.get_locked_phantoms()
+        
+        return [
+            {
+                "phantom_id": p.phantom_id,
+                "lock_strength": p.avg_confidence(),
+                "supporting_queries": len(p.hit_history),
+                "expected_grain": f"grain_{p.phantom_id[:16]}",
+                "concepts": list(set(p.query_concepts))[:5],  # Top 5 unique concepts
+            }
+            for p in sorted(all_locked, key=lambda x: x.avg_confidence(), reverse=True)[:top_n]
+        ]
 
 
 # ============================================================================
